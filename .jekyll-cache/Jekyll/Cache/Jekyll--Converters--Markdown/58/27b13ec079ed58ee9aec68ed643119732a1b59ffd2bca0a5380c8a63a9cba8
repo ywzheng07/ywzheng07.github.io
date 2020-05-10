@@ -1,0 +1,276 @@
+I"��<p>本文主要针对希望对gRPC入门的读者，读者需要有最最基本的C++语法知识，但完全不需要是C++专家，多数的代码都以直白的语言进行了解释。</p>
+
+<h2 id="rpc-简介">RPC 简介</h2>
+
+<p>RPC (Remote Procedure Call)即远端程序呼叫，指由一台电脑的程序呼叫另一个地址空间(Address Space)的程序，在这里另一个地址空间可以是本机上的另一个进程，也可以是另一台电脑的进程。因此，RPC也属于一种进程间通讯模式(Interprocess Communication)。</p>
+
+<p>通过RPC，客户端可以如同调用本进程内的程序一样调用远程服务器上的程序。</p>
+
+<h4 id="为什么要用rpc框架">为什么要用RPC框架</h4>
+
+<p>如果没有RPC框架，试想客户端需要调用服务器上如下的一个简单程序：</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span> <span class="nf">sum_int</span><span class="p">(</span><span class="kt">int</span> <span class="n">a</span><span class="p">,</span> <span class="kt">int</span> <span class="n">b</span><span class="p">){</span>
+    <span class="k">return</span> <span class="n">a</span><span class="o">+</span><span class="n">b</span>
+<span class="p">};</span>
+</code></pre></div></div>
+
+<p>整个调用过程需要：</p>
+
+<ol>
+  <li>客户端与服务器建立通讯；</li>
+  <li>建立通讯后，客户端将需要调用的函数sum_int及函数的参数a和b编码打包之后传输给服务器（即Marshalling）；</li>
+  <li>服务器收到字符串解码(Unmarshalling)。这里需要假设客户端与服务器提前关于编码已有协议；</li>
+  <li>调用合适的函数，计算出结果；</li>
+  <li>服务器将结果编码及序列化之后传输给客户端；</li>
+  <li>客户端收到结果后进行解析，得到最终结果；</li>
+</ol>
+
+<p>以上的各个过程如果全都没有标准化流程，将是一个浩大的工作量，许多的时间将被花费在通讯，编码和错误处理(Error handling)等细节问题上。</p>
+
+<p>因此，历史上出现了许多标准化的RPC框架，将通讯，编码等细节问题全部自动化，客户端和服务器的程序员只需要考虑具体调用的程序的实现。其中，gRPC就是Google推出的一个简洁高效的RPC框架。</p>
+
+<h4 id="rpc框架概览">RPC框架概览</h4>
+
+<p>RPC框架的一个重要功能，就是提供标准化的接口界面。这个语言被称为IDL(Interface description language，可以参考<a href="https://en.wikipedia.org/wiki/Interface_description_language">维基百科</a>) ，它并不针对特定语言(language agnostic)，是一种纯粹用来描述接口的语言，由此使得通讯本身不受所使用的语言影响，并使得不同语言编写的程序可以交流。接口界面的定义中，一般包含参数和程序两种，RPC框架会根据定义文件，生成对应的对象和框架，供程序员调用。框架的概览如下：</p>
+
+<ul>
+  <li>服务器端：服务器端会生成所有在界面接口中定义好的参数及函数，同时会搭建好所有与通讯、编码/解码相关的代码。程序员只需要具体实现前面被定义的函数即可。在C++中，这可以简单地通过函数重写(override)来实现。</li>
+  <li>客户端：客户端也会生成界面接口定义好的参数，同时会生成一个“桩”(stub)，即客户端与服务器通讯的接口。客户端就可以通过该接口调用服务器的函数。</li>
+</ul>
+
+<p>同样，如果以上概念性的讲解不是很明白，不用担心，后面我们会用gRPC来举例说明，我个人觉得在例子中会更好理解， 建议标注出不理解的地方，然后看完例子后再回来看一下这段话，会更容易理解。</p>
+
+<h2 id="grpc-简介">gRPC 简介</h2>
+
+<p>gRPC就是目前最为广泛使用的RPC框架之一，接下来，我们继续沿用上述的整数相加函数作为例子，详细描述gRPC的使用方法。使用gRPC在C++实现客户端调用服务器这个函数可以分为以下几个步骤：</p>
+
+<ol>
+  <li>用IDL定义接口界面，包括传输的参数和函数类型。</li>
+  <li>编译定义好的IDL</li>
+  <li>在服务器端实现函数</li>
+  <li>客户端调用函数。</li>
+  <li>编译和运行</li>
+</ol>
+
+<h4 id="定义protobuf的接口界面">定义Protobuf的接口界面</h4>
+
+<p>gRPC的IDL叫做Protocol Buffers(Protobuf)，它允许我们定义两种类型的接口，一个是消息(message)，一个是服务(service)。</p>
+
+<p>客户端每次调用函数的时候，会向服务器发送一个信息，在Protobuf中被定义为消息(message)。注意，客户端每次调用函数时只能发送<strong>一条</strong>message，但可以把所有参数放到message里面。在我们的例子中，我们有两个需要相加的整数<code class="highlighter-rouge">a</code>和<code class="highlighter-rouge">b</code> ，需要将它们放到同一条message里。出于演示的目的，我们加入一条文本信息来表明客户端的姓名，则可以定义该message为：</p>
+
+<div class="language-protobuf highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="na">syntax</span> <span class="o">=</span> <span class="s">"proto3"</span><span class="p">;</span> <span class="c1">//申明用proto3的语法，否则会默认使用proto2。</span>
+<span class="kd">message</span> <span class="nc">Numbers</span><span class="p">{</span>
+	<span class="kt">int64</span> <span class="na">a</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span>
+    <span class="kt">int64</span> <span class="na">b</span> <span class="o">=</span> <span class="mi">2</span><span class="p">;</span>
+    <span class="kt">string</span> <span class="na">name</span> <span class="o">=</span> <span class="mi">3</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>上面的代码中，message是类型，Numbers是我们给予这个message的名字，因为这个例子比较简单，<code class="highlighter-rouge">a</code>和<code class="highlighter-rouge">b</code>只是两个整数而已，因此我们将名字命名为Numbers，即这是客户端发给服务器的请求中所必须包含的参数。现实中，请按照一般的命名规则进行适当的命名。</p>
+
+<p>值得注意的是，message里的每一个条目包含三部分内容，即类型，名字，编号，这篇<a href="https://developers.google.com/protocol-buffers/docs/proto3">官方文档</a>可以找到支持的数据类型的名单，名字可以自定义，而编号应该在1-536,870,911之间，是在二进制编码中用来唯一识别不同条目的，在每个message内部，编码应该唯一。出于编码效率的考虑，可以尽量使用较小的数字。</p>
+
+<p>通过这个简单的结构，无论客户端需要发给服务器多少内容，均可以打包在message里面。同样，服务器的回复虽然只包含一个整型，但也应该被打包在这样的一个message里：</p>
+
+<div class="language-protobuf highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">message</span> <span class="nc">Result</span><span class="p">{</span>
+	<span class="kt">int64</span> <span class="na">res</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>所以，针对每一个函数，我们应该包含一个request message和一个response message，在外面这个例子中，客户需要发送的request即Numbers类型，而服务器返回的response即Result型。注意如果有多个函数的情况下，可以重复使用这些message，下面用例子来说明。</p>
+
+<p>除了定义message之外，我们还需要在Protobuf里面声明函数。在整个服务类下面，可以用rpc关键词定义不同的类函数(method)。我们这里定义了两个类函数，整数加法(intSum)和整数乘法(intMult)。该函数需要获取一个Numbers型(之前已经定义)作为函数的输入参数，同时，该函数将会返回一个Result型。正如前文所述，已经定义的message可以用在不同的函数之中。</p>
+
+<div class="language-protobuf highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="na">syntax</span> <span class="o">=</span> <span class="s">"proto3"</span><span class="p">;</span> <span class="c1">//申明用proto3的语法，否则会默认使用proto2。</span>
+<span class="kn">package</span> <span class="nn">simplemath</span><span class="p">;</span> <span class="c1">//即该文件中定义的所有类将会在simplemath这个作用域内</span>
+<span class="kd">service</span> <span class="n">SimpleMath</span><span class="p">{</span> <span class="c1">//声明整个服务器函数，将会被编译为一个类</span>
+	<span class="c1">//声明加法函数的接口</span>
+	<span class="k">rpc</span> <span class="n">intSum</span><span class="p">(</span><span class="n">Numbers</span><span class="p">)</span> <span class="k">returns</span> <span class="p">(</span><span class="n">Result</span><span class="p">)</span> <span class="p">{};</span>
+	<span class="c1">//声明乘法函数的接口</span>
+	<span class="k">rpc</span> <span class="n">intMult</span><span class="p">(</span><span class="n">Numbers</span><span class="p">)</span> <span class="k">returns</span> <span class="p">(</span><span class="n">Result</span><span class="p">)</span> <span class="p">{};</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>完整的proto文件<a href="https://github.com/ywzheng07/gRPCSimpleMath/blob/master/simple_math.proto">见此</a>。</p>
+
+<p>针对protobuf支持的数据类型等信息，可以参考<a href="https://developers.google.com/protocol-buffers/docs/proto3">官方文档</a>。</p>
+
+<h4 id="编译protobuf">编译Protobuf</h4>
+
+<p>在<a href="https://github.com/grpc/grpc/blob/v1.28.1/src/cpp/README.md#make">安装</a>好gRPC的基础上，我们这里的<code class="highlighter-rouge">simple_math.proto</code>的编译可以通过以下命令进行编译，为了方便读者，我们也在Makefile里提供了编译proto的命令，可以直接通过<code class="highlighter-rouge">make proto</code>进行编译。</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code>protoc <span class="nt">--grpc_out</span><span class="o">=</span><span class="nb">.</span> <span class="nt">--plugin</span><span class="o">=</span>protoc-gen-grpc<span class="o">=</span><span class="sb">`</span>which grpc_cpp_plugin<span class="sb">`</span> simple_math.proto
+protoc <span class="nt">--cpp_out</span><span class="o">=</span><span class="nb">.</span> simple_math.proto
+</code></pre></div></div>
+
+<p>这个命令会在同目录下，根据<code class="highlighter-rouge">simple_math.proto</code>这一文件生成对应的C++头文件和源文件，一共有四个文件，具体如下：</p>
+
+<ul>
+  <li><code class="highlighter-rouge">simple_math.grpc.pb.h</code>该文件是服务类(service class)的头文件，在我们这里，定义了SimpleMath这个服务(service)的类(class)。</li>
+  <li><code class="highlighter-rouge">simple_math.grpc.pb.cc</code>该文件是服务类(service class)的源文件，包括了各种序列化，通讯等代码，同时也对我们在protobuf里面声明的两个类函数进行了定义，但具体实现需要我们来写。</li>
+  <li><code class="highlighter-rouge">simple_math.pb.h</code>该文件包含了消息类(message class)的头文件，在我们这里，包括Numbers和Result.</li>
+  <li><code class="highlighter-rouge">simiple_math.pb.cc</code> 该文件是对消息类(message class)的具体实现。</li>
+</ul>
+
+<p>这些生成的文件<strong>不要修改</strong>，可以打开看一看具体的实现，不过这些代码比较复杂，而且很多地方调用了grpc库里的函数，看起来会比较吃力。如果只是想用这个框架，我们只需要知道接口就可以了。C++中常用的接口可以参考这篇<a href="https://developers.google.com/protocol-buffers/docs/cpptutorial">官方文档</a>。我们这里总结一下最常用的几个类函数，并在后续的实际使用中介绍。</p>
+
+<p>对于message中定义的每一个字段(field)，会有<code class="highlighter-rouge">“set_”,"has_", "clear_"</code>这几个类函数可以调用。正如命名所体现的，其功能分别为，“设置该字段的值”，“该字段是否已设置值”以及”清除该字段的值“。假设定义nums为一个Numbers型，我们可以利用<code class="highlighter-rouge">nums.set_name()</code>来设定nums中的name的值，用<code class="highlighter-rouge">nums.has_name()</code>来判定nums中name这个字段是否已经被设置，然后利用<code class="highlighter-rouge">nums.clear_name()</code>来清除nums中已经设定的name值。</p>
+
+<p>另外值得注意的是，在消息类里面，以message中定义的字段均为私有，如果需要调用，需要通过同名的类函数调用，在以上的例子里，如果想调用Numbers的name，应该用<code class="highlighter-rouge">nums.name()</code>。</p>
+
+<h4 id="在服务器端实现函数">在服务器端实现函数</h4>
+
+<p>当protofbuf被编译后，我们就可以服务器和客户端的实现文件中调用编译好的消息类(message class)和服务类(service class)，这一点只需要包含生成的protobuf头文件即可，在我们的例子中加入<code class="highlighter-rouge">#include "simple_math.grpc.pb.h"</code>即可。一般而言服务类的实现头文件中已经包含了消息类，所以不需要重复包含。</p>
+
+<p>实现服务类函数可以通过继承已经写好的服务类，并重写(override)对应的类函数来实现，这里官方推荐的命名方式为类+Impl。注意在服务器端和客户端中用到的的许多标识符或者类型是在grpc或者simplemath的命名空间内，具体可以参见<a href="">源代码</a>。</p>
+
+<p>在服务器端，我们将先定义：</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">SimpleMathImpl</span> <span class="o">:</span> <span class="k">public</span> <span class="n">SimpleMath</span><span class="o">::</span><span class="n">Service</span><span class="p">{</span>
+    <span class="p">...</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>然后在这个子类中对rpc服务进行具体实现。在这里我们给出整数相加这个函数的实现，读者可以实现一下整数相乘作为练习。</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">SimpleMathImpl</span> <span class="o">:</span> <span class="k">public</span> <span class="n">SimpleMath</span><span class="o">::</span><span class="n">Service</span><span class="p">{</span>
+	<span class="n">Status</span> <span class="n">intSum</span><span class="p">(</span><span class="n">ServerContext</span><span class="o">*</span> <span class="n">context</span><span class="p">,</span><span class="k">const</span> <span class="n">Numbers</span><span class="o">*</span> <span class="n">nums</span><span class="p">,</span> <span class="n">Result</span><span class="o">*</span> <span class="n">result</span><span class="p">)</span> <span class="k">override</span><span class="p">{</span>
+		<span class="n">std</span><span class="o">::</span><span class="n">cout</span><span class="o">&lt;&lt;</span><span class="s">"Processing sum request from client"</span><span class="o">&lt;&lt;</span><span class="n">nums</span><span class="o">-&gt;</span><span class="n">name</span><span class="p">()</span><span class="o">&lt;&lt;</span><span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
+		<span class="kt">int</span> <span class="n">res</span> <span class="o">=</span> <span class="n">nums</span><span class="o">-&gt;</span><span class="n">a</span><span class="p">()</span> <span class="o">+</span> <span class="n">nums</span><span class="o">-&gt;</span><span class="n">b</span><span class="p">();</span>
+		<span class="c1">//回复的内容装在Result中，返回值是处理状态.</span>
+		<span class="n">result</span><span class="o">-&gt;</span><span class="n">set_res</span><span class="p">(</span><span class="n">res</span><span class="p">);</span>
+        <span class="c1">//这个简单例子中我们没有错误处理，因此总是返回OK。</span>
+		<span class="c1">//但是注意如果传输出现问题，客户端依然可能受到非OK的返回值。</span>
+		<span class="k">return</span> <span class="n">Status</span><span class="o">::</span><span class="n">OK</span><span class="p">;</span>
+	<span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>本函数比较简单，注意这个类函数已经在头文件中被定义好了，一定要遵守传参规则，即接受三个参数，类型分别为服务器端配置类(ServerContext)，请求类（在我们的例子中是一个Numbers类，这是我们自己在protobuf中规定的），返回类（在我们的例子中是一个Result类，也是我们自己在protobuf中规定的）。</p>
+
+<p>实现的过程唯一需要注意的是函数返回的是处理状态，根据处理情况可以有多个状态类型可以返回。例如在文件服务器中，可能出现文件”没有找到”(“Not Found”)的错误信息，在这种情况下可以返回：</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">return</span> <span class="n">Status</span><span class="p">(</span><span class="n">StatusCode</span><span class="o">::</span><span class="n">Not_Found</span><span class="p">,</span> <span class="s">"File Not Found"</span><span class="p">)</span> 
+</code></pre></div></div>
+
+<p>gRPC还提供了许多类型的返回状态，可以参考这篇<a href="https://developers.google.com/maps-booking/reference/grpc-api-v2/status_codes">官方API</a>，或者在写代码的时候利用自动补全，选择合适的返回类型。</p>
+
+<p>在返回值上值得注意的是，客户端收到的状态并不永远等于服务器的类函数返回的状态，实际的返回值还要经过通讯过程的错误处理。一个简单的例子是在超时(timeout)的情况下，服务器的这个类函数可能返回了OK，但通讯已经超时，因此客户端收到的状态为Timeout，而非OK。 有关超时的具体介绍，可以参见这篇<a href="https://grpc.io/blog/deadlines/">官方文档</a>。</p>
+
+<p>写好客户端的服务类之后，再通过gRPC提供的ServerBuilder建立服务器。新建builder之后，首先向builder提供服务器的地址/端口信息，及加密证书。这里我们用本地地址即47852这个端口。同时选择无需加密或认证，直接用gRPC提供的未加密认证，有关其他的认证方法综述可以看<a href="https://grpc.io/docs/guides/auth/">官方文档</a>。</p>
+
+<p>添加以上信息后，将我们写好的服务类注册到builder，然后再用BuildAndStart即可以得到服务器并启动。代码如下：</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span> <span class="nf">main</span><span class="p">(</span><span class="kt">int</span> <span class="n">argc</span><span class="p">,</span> <span class="kt">char</span><span class="o">**</span> <span class="n">argv</span><span class="p">){</span>
+	<span class="n">std</span><span class="o">::</span><span class="n">string</span> <span class="n">addr</span> <span class="o">=</span> <span class="s">"127.0.0.1:47852"</span><span class="p">;</span>
+	<span class="n">SimpleMathImpl</span> <span class="n">simple_math_service</span><span class="p">;</span>
+	<span class="n">ServerBuilder</span> <span class="n">builder</span><span class="p">;</span>
+	<span class="n">builder</span><span class="p">.</span><span class="n">AddListeningPort</span><span class="p">(</span><span class="n">addr</span><span class="p">,</span><span class="n">grpc</span><span class="o">::</span><span class="n">InsecureServerCredentials</span><span class="p">());</span>
+	<span class="n">builder</span><span class="p">.</span><span class="n">RegisterService</span><span class="p">(</span><span class="o">&amp;</span><span class="n">simple_math_service</span><span class="p">);</span>
+	<span class="n">std</span><span class="o">::</span><span class="n">unique_ptr</span><span class="o">&lt;</span><span class="n">Server</span><span class="o">&gt;</span> <span class="n">simple_math_server</span> <span class="o">=</span> <span class="n">builder</span><span class="p">.</span><span class="n">BuildAndStart</span><span class="p">();</span>
+	<span class="n">std</span><span class="o">::</span><span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="s">"Simple Math Server listening on"</span> <span class="o">&lt;&lt;</span> <span class="n">addr</span> <span class="o">&lt;&lt;</span> <span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
+	<span class="n">simple_math_server</span><span class="o">-&gt;</span><span class="n">Wait</span><span class="p">();</span>
+	<span class="c1">//服务器将一直等待连接，不会执行到return</span>
+	<span class="k">return</span> <span class="mi">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<h4 id="客户端调用函数">客户端调用函数</h4>
+
+<p>客户端需要通过“桩”(stub)来调用函数，对桩的理解可以认为是一个接口，即在客户端这里，桩代表了整个服务器的抽象，客户端可以通过桩调用背后所提供的服务，而不必了解具体的服务实现，也不必处理任何的通讯需求。</p>
+
+<p>我们首先新建一个桩，它的初始化需要一个channel类型，可以通过<code class="highlighter-rouge">grpc::CreateChannel</code>这个函数来来建立。而该函数<code class="highlighter-rouge">grpc::CreateChannel</code>需要两个参数，一个是服务器的地址，这里我们知道服务器是在本地地址上监控47852这个端口，所以直接给出地址<code class="highlighter-rouge">127.0.0.1:47852</code>。另一个是一个认证信息，和服务器一样，我们不需要进行认证，因此继续用未加密认证。</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kt">int</span> <span class="nf">main</span><span class="p">(</span><span class="kt">int</span> <span class="n">argc</span><span class="p">,</span> <span class="kt">char</span><span class="o">**</span> <span class="n">argv</span><span class="p">){</span>
+	<span class="n">std</span><span class="o">::</span><span class="n">string</span> <span class="n">addr</span> <span class="o">=</span> <span class="s">"127.0.0.1:47852"</span><span class="p">;</span>
+	<span class="n">std</span><span class="o">::</span><span class="n">unique_ptr</span><span class="o">&lt;</span><span class="n">SimpleMath</span><span class="o">::</span><span class="n">Stub</span><span class="o">&gt;</span> <span class="n">stub</span><span class="p">;</span>
+	<span class="c1">//建立stub</span>
+	<span class="n">stub</span> <span class="o">=</span> <span class="n">SimpleMath</span><span class="o">::</span><span class="n">NewStub</span><span class="p">(</span><span class="n">grpc</span><span class="o">::</span><span class="n">CreateChannel</span><span class="p">(</span><span class="n">addr</span><span class="p">,</span> <span class="n">grpc</span><span class="o">::</span><span class="n">InsecureChannelCredentials</span><span class="p">()));</span>
+	<span class="n">Numbers</span> <span class="n">nums</span><span class="p">;</span>
+	<span class="n">Status</span> <span class="n">status</span><span class="p">;</span>  <span class="c1">//用来接受server返回的状态，如果状态为失败说明调用失败</span>
+	<span class="n">Result</span> <span class="n">res</span><span class="p">;</span>  <span class="c1">// 准备好储存server回复的placeholder</span>
+    <span class="c1">//设置好需要发送的request的参数</span>
+	<span class="n">nums</span><span class="p">.</span><span class="n">set_a</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
+	<span class="n">nums</span><span class="p">.</span><span class="n">set_b</span><span class="p">(</span><span class="mi">2</span><span class="p">);</span>
+	<span class="n">nums</span><span class="p">.</span><span class="n">set_name</span><span class="p">(</span><span class="s">"gRPC教程by Y.Zheng"</span><span class="p">);</span>
+	<span class="c1">//通过stub调用server端的函数</span>
+	<span class="n">ClientContext</span> <span class="n">context</span><span class="p">;</span>
+	<span class="n">status</span> <span class="o">=</span> <span class="n">stub</span><span class="o">-&gt;</span><span class="n">intSum</span><span class="p">(</span><span class="o">&amp;</span><span class="n">context</span><span class="p">,</span> <span class="n">nums</span><span class="p">,</span> <span class="o">&amp;</span><span class="n">res</span><span class="p">);</span>
+	<span class="c1">//解析结果</span>
+	<span class="k">if</span> <span class="p">(</span><span class="n">status</span><span class="p">.</span><span class="n">ok</span><span class="p">()){</span>
+		<span class="n">std</span><span class="o">::</span><span class="n">cout</span><span class="o">&lt;&lt;</span><span class="s">"Computing Result is "</span><span class="o">&lt;&lt;</span><span class="n">res</span><span class="p">.</span><span class="n">res</span><span class="p">()</span><span class="o">&lt;&lt;</span><span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
+	<span class="p">}</span>
+	<span class="k">else</span><span class="p">{</span>
+		<span class="n">std</span><span class="o">::</span><span class="n">cout</span><span class="o">&lt;&lt;</span><span class="s">"Error in calling remote procedure"</span><span class="o">&lt;&lt;</span><span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
+	<span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>虽然这是最简单的客户端调用方法，但是如果用类进行了再次包装，可以更方便地管理函数和进行调用，架构如下：</p>
+
+<div class="language-c++ highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">class</span> <span class="nc">SimpleMathClient</span><span class="p">{</span>
+<span class="nl">public:</span>
+	<span class="n">SimpleMathClient</span><span class="p">(</span><span class="n">std</span><span class="o">::</span><span class="n">string</span> <span class="n">addr</span><span class="p">,</span> <span class="n">std</span><span class="o">::</span><span class="n">string</span> <span class="n">name</span><span class="o">=</span><span class="s">"gRPC教程by Y.Zheng"</span><span class="p">)</span><span class="o">:</span>
+			<span class="n">stub</span><span class="p">(</span><span class="n">SimpleMath</span><span class="o">::</span><span class="n">NewStub</span><span class="p">(</span><span class="n">grpc</span><span class="o">::</span><span class="n">CreateChannel</span><span class="p">(</span><span class="n">addr</span><span class="p">,</span> <span class="n">grpc</span><span class="o">::</span><span class="n">InsecureChannelCredentials</span><span class="p">()))),</span>
+			<span class="n">name</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+			<span class="p">{};</span> <span class="c1">// constructor，设定stub及客户名字</span>
+	<span class="n">std</span><span class="o">::</span><span class="n">unique_ptr</span><span class="o">&lt;</span><span class="n">SimpleMath</span><span class="o">::</span><span class="n">Stub</span><span class="o">&gt;</span> <span class="n">stub</span><span class="p">;</span> <span class="c1">//客户端的“桩”，可以理解为客户端上用来链接所有服务器函数的一个接口</span>
+	<span class="n">std</span><span class="o">::</span><span class="n">string</span> <span class="n">name</span><span class="p">;</span> <span class="c1">//客户端的名字，只是为了演示作用，可以没有</span>
+	<span class="kt">void</span> <span class="n">sum_int</span><span class="p">(</span><span class="kt">int</span> <span class="n">a</span><span class="p">,</span> <span class="kt">int</span> <span class="n">b</span><span class="p">){</span>
+        <span class="p">...</span>
+<span class="p">};</span>
+</code></pre></div></div>
+
+<p>在Github客户端<a href="https://github.com/ywzheng07/gRPCSimpleMath/blob/master/math_client.cpp">代码</a>里，有以上实现的完整版。</p>
+
+<h4 id="编译和运行">编译和运行</h4>
+
+<p>代码的编译即分别将gRPC提供的源码和我们自己的源码编译为二进制文件(*.o)，然后分别编译客户端和服务端的可执行文件。官方的C++教程中提供了Makefile，考虑到可能有些读者不太熟悉Makefile中的很多语法，这里提供直接用命令行编译的方式。</p>
+
+<p>生成二进制目标文件：</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code>g++ <span class="sb">`</span>pkg-config <span class="nt">--cflags</span> protobuf grpc<span class="sb">`</span> <span class="nt">-c</span> <span class="nt">-o</span> simple_math.pb.o simple_math.pb.cc
+g++ <span class="sb">`</span>pkg-config <span class="nt">--cflags</span> protobuf grpc<span class="sb">`</span> <span class="nt">-c</span> <span class="nt">-o</span> simple_math.grpc.pb.o simple_math.grpc.pb.cc
+g++ <span class="sb">`</span>pkg-config <span class="nt">--cflags</span> protobuf grpc<span class="sb">`</span> <span class="nt">-c</span> <span class="nt">-o</span> math_client.o math_client.cpp
+g++ <span class="sb">`</span>pkg-config <span class="nt">--cflags</span> protobuf grpc<span class="sb">`</span> <span class="nt">-c</span> <span class="nt">-o</span> math_server.o math_server.cpp
+</code></pre></div></div>
+
+<p>生成客户端执行文件：</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code>g++ simple_math.pb.o simple_math.grpc.pb.o math_client.o <span class="sb">`</span>pkg-config <span class="nt">--libs</span> protobuf grpc++<span class="sb">`</span> <span class="nt">-o</span> mathclient
+</code></pre></div></div>
+
+<p>生成服务器执行文件：</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code>g++ simple_math.pb.o simple_math.grpc.pb.o math_server.o <span class="sb">`</span>pkg-config <span class="nt">--libs</span> protobuf grpc++<span class="sb">`</span> <span class="nt">-o</span> mathserver
+</code></pre></div></div>
+
+<p>接下来就可以运行了，在一个终端输入：</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code>./mathserver
+<span class="c"># 应该看到以下内容：</span>
+Simple Math Server listening on 127.0.0.1:47852
+</code></pre></div></div>
+
+<p>然后打开另一个终端输入：</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code>./mathclient
+<span class="c"># 用户可以自行输入两个整数：</span>
+Please enter two integers, a: 42
+and b: 1984
+Computing Result is 2026
+</code></pre></div></div>
+
+<p>客户端启动后，服务器端应该输出以下内容，并继续等待连接：</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Processing <span class="nb">sum </span>request from client: gRPC教程by Y.Zheng
+Result is: 2026
+</code></pre></div></div>
+
+<p>为了方便大家编译，我们也将上述命令行放入了<a href="https://github.com/ywzheng07/gRPCSimpleMath/blob/master/Makefile">Makefile</a>，注意编译的时候需要先<code class="highlighter-rouge">make proto</code>再<code class="highlighter-rouge">make</code>。</p>
+
+<h3 id="总结">总结</h3>
+
+<p>本文主要简单介绍了gRPC是什么，为什么要用以及简单的怎么用。当然，这个介绍只是冰山一角，真正的gRPC使用有更多的技巧，需要大家在实践中学习。后续预计有关gRPC还会有两篇文章左右，一篇利用官方的C++教程解释stream data相关的内容。另一篇将包括一些简单的小窍门，例如定义空的message，和message之中repeated参数用法。</p>
+:ET
